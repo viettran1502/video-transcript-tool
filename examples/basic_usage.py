@@ -1,6 +1,13 @@
 #!/usr/bin/env python3
 """
 Basic Usage Examples for Video Transcript Tool
+
+__author__ = "Trần Việt Anh (@viettran1502)"
+__email__ = "viettran1502@gmail.com"
+__contributors__ = ["Cot.ghw@gmail.com"]
+__version__ = "1.0.0"
+__license__ = "MIT"
+
 """
 
 import sys
