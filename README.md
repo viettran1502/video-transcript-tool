@@ -111,12 +111,6 @@ python3 douyin_breakthrough.py "DOUYIN_URL"
 
 MIT License - see LICENSE file for details.
 
-## 🙋‍♂️ Author
-
-**Trần Việt Anh** (@viettran1502)
-- Telegram: @viettran1502
-- Email: viettran1502@gmail.com
-
----
+## 🙋‍♂️ Authors**Trần Việt Anh** (@viettran1502)- Telegram: @viettran1502- Email: viettran1502@gmail.com**Contributors:**- Cot.ghw@gmail.com---
 
 ⭐ If this tool helps you, please give it a star!
