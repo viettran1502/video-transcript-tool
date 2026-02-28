@@ -19,8 +19,9 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from transcript_extractor import WhisperTranscriptExtractor
 
 def main():
-    # Initialize extractor
-    extractor = WhisperTranscriptExtractor(whisper_model='base')  # Use base model for faster processing
+    # Initialize extractor — constructor returns instantly (Whisper loads in background).
+    # The model is only needed when audio transcription is required (no subtitles found).
+    extractor = WhisperTranscriptExtractor(whisper_model='small')  # 'small' balances speed & accuracy
     
     # Example URLs (replace with real ones)
     youtube_url = "https://www.youtube.com/watch?v=dQw4w9WgXcQ"

@@ -20,29 +20,27 @@ import tempfile
 import random
 from urllib.parse import urlparse, unquote
 
+from whisper_manager import preload_model, require_model
+
 class DouyinBreakthrough:
-    def __init__(self):
+    def __init__(self, whisper_model='small'):
         self.temp_dir = tempfile.mkdtemp(prefix='douyin_')
         self.session = requests.Session()
-        
+        self.whisper_model = whisper_model
+
         # Chinese-friendly user agents
         self.user_agents = [
             'Mozilla/5.0 (Linux; Android 11; ONEPLUS A6000) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/95.0.4638.74 Mobile Safari/537.36',
             'Mozilla/5.0 (iPhone; CPU iPhone OS 14_8 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.1.2 Mobile/15E148 Safari/604.1',
             'Mozilla/5.0 (Linux; Android 10; SM-G973F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/94.0.4606.85 Mobile Safari/537.36'
         ]
-        
-        self.whisper = None
-        self._init_whisper()
+
+        preload_model(self.whisper_model)
         self._setup_session()
-    
-    def _init_whisper(self):
-        try:
-            import whisper
-            self.whisper = whisper.load_model("base")
-            print("✅ Whisper loaded")
-        except Exception as e:
-            print(f"❌ Whisper failed: {e}")
+
+    def _get_whisper(self):
+        """Return the shared Whisper model, blocking until ready."""
+        return require_model(self.whisper_model)
     
     def _setup_session(self):
         ua = random.choice(self.user_agents)
@@ -304,17 +302,73 @@ class DouyinBreakthrough:
         
         return {'success': False}
     
+    @staticmethod
+    def _parse_vtt(raw):
+        """Convert VTT/SRT subtitle content to clean plain text."""
+        lines, seen = [], set()
+        for line in raw.splitlines():
+            line = line.strip()
+            if not line or line.startswith(('WEBVTT', 'Kind:', 'Language:', 'NOTE', 'STYLE')):
+                continue
+            if '-->' in line or line.isdigit():
+                continue
+            clean = re.sub(r'<[^>]+>', '', line).strip()
+            if clean and clean not in seen:
+                lines.append(clean)
+                seen.add(clean)
+            if len(seen) > 200:
+                seen.clear()
+        return '\n'.join(lines)
+
+    def _check_subtitles(self, url):
+        """Try fetching existing subtitles via yt-dlp before heavier methods."""
+        try:
+            cmd = [
+                'yt-dlp', '--js-runtimes', 'node',
+                '--remote-components', 'ejs:github',
+                '--write-subs', '--write-auto-subs',
+                '--sub-lang', 'zh,en', '--skip-download',
+                '--paths', self.temp_dir,
+                '-o', '%(id)s.%(ext)s',
+                url
+            ]
+            subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+            for f in os.listdir(self.temp_dir):
+                if f.endswith(('.vtt', '.srt', '.ass')):
+                    sub_path = os.path.join(self.temp_dir, f)
+                    with open(sub_path, 'r', encoding='utf-8') as fh:
+                        raw = fh.read()
+                    os.remove(sub_path)
+                    content = self._parse_vtt(raw)
+                    if len(content.strip()) > 20:
+                        return {
+                            'success': True,
+                            'title': 'Douyin Video',
+                            'transcript': content,
+                            'source': 'douyin_yt-dlp_subs',
+                            'language': 'zh'
+                        }
+        except Exception:
+            pass
+        return None
+
     def extract_douyin_breakthrough(self, url):
         """Main Douyin extraction method"""
         print(f"🚀 Douyin Breakthrough Attack: {url}")
-        
+
+        # --- Subtitle-first: fast path ---
+        sub_result = self._check_subtitles(url)
+        if sub_result:
+            print("✅ Subtitles found — skipping heavy extraction")
+            return sub_result
+
         video_id = self._extract_video_id(url)
         if not video_id:
             print("⚠️ Could not extract video ID, trying with full URL")
             video_id = url  # Use full URL as fallback
         else:
             print(f"🎯 Video ID: {video_id}")
-        
+
         # Attack methods
         methods = [
             lambda: self.method_api_reverse_engineering(video_id),
@@ -421,28 +475,29 @@ class DouyinBreakthrough:
         return result
     
     def _download_and_extract_audio(self, video_url):
-        """Download and extract audio from Douyin video"""
+        """Download and extract audio from Douyin video (16kHz mono wav)"""
         try:
-            audio_file = os.path.join(self.temp_dir, f"douyin_audio_{int(time.time())}.mp3")
-            
-            # yt-dlp with Douyin-specific settings
+            audio_file = os.path.join(self.temp_dir, f"douyin_audio_{int(time.time())}.wav")
+
+            # yt-dlp with Douyin-specific settings — 16kHz mono for Whisper
             cmd = [
                 'yt-dlp',
                 '--extract-audio',
-                '--audio-format', 'mp3',
+                '--audio-format', 'wav',
+                '--postprocessor-args', 'ffmpeg:-ar 16000 -ac 1',
                 '--user-agent', random.choice(self.user_agents),
                 '--add-header', 'Referer: https://www.douyin.com/',
                 '--no-check-certificate',
                 '--ignore-errors',
-                '--output', audio_file.replace('.mp3', '.%(ext)s'),
+                '--output', audio_file.replace('.wav', '.%(ext)s'),
                 video_url
             ]
-            
+
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
-            
+
             if result.returncode == 0:
-                for ext in ['mp3', 'wav', 'm4a']:
-                    test_file = audio_file.replace('.mp3', f'.{ext}')
+                for ext in ['wav', 'mp3', 'm4a']:
+                    test_file = audio_file.replace('.wav', f'.{ext}')
                     if os.path.exists(test_file):
                         return test_file
             
@@ -452,20 +507,20 @@ class DouyinBreakthrough:
                 'Referer': 'https://www.douyin.com/',
                 'Accept': '*/*'
             }
-            
-            video_file = audio_file.replace('.mp3', '.mp4')
+
+            video_file = audio_file.replace('.wav', '.mp4')
             response = self.session.get(video_url, headers=headers, stream=True, timeout=30)
-            
+
             if response.status_code in [200, 206]:
                 with open(video_file, 'wb') as f:
                     for chunk in response.iter_content(chunk_size=8192):
                         if chunk:
                             f.write(chunk)
-                
-                # Extract audio
+
+                # Extract audio — 16kHz mono wav
                 ffmpeg_cmd = [
                     'ffmpeg', '-i', video_file,
-                    '-vn', '-acodec', 'mp3', '-ar', '16000', '-ac', '1', '-y',
+                    '-vn', '-acodec', 'pcm_s16le', '-ar', '16000', '-ac', '1', '-y',
                     audio_file
                 ]
                 
@@ -484,11 +539,12 @@ class DouyinBreakthrough:
     
     def _transcribe_audio(self, audio_file):
         """Transcribe with Whisper"""
-        if not self.whisper:
+        whisper = self._get_whisper()
+        if not whisper:
             return None
-        
+
         try:
-            result = self.whisper.transcribe(audio_file, language="zh")
+            result = whisper.transcribe(audio_file, language="zh")
             transcript = result["text"].strip()
             
             if os.path.exists(audio_file):

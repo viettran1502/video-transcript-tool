@@ -21,29 +21,27 @@ from urllib.parse import urlparse, unquote, parse_qs
 import base64
 import random
 
+from whisper_manager import preload_model, require_model
+
 class FacebookDirectAttack:
-    def __init__(self):
+    def __init__(self, whisper_model='small'):
         self.temp_dir = tempfile.mkdtemp(prefix='fb_direct_')
         self.session = requests.Session()
-        
+        self.whisper_model = whisper_model
+
         # Multiple realistic mobile user agents
         self.user_agents = [
             'Mozilla/5.0 (iPhone; CPU iPhone OS 17_1_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Mobile/15E148 Safari/604.1',
             'Mozilla/5.0 (Linux; Android 13; SM-S908B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/112.0.0.0 Mobile Safari/537.36',
             'Mozilla/5.0 (Linux; Android 12; SM-G998B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/111.0.0.0 Mobile Safari/537.36'
         ]
-        
-        self.whisper = None
-        self._init_whisper()
+
+        preload_model(self.whisper_model)
         self._setup_session()
-    
-    def _init_whisper(self):
-        try:
-            import whisper
-            self.whisper = whisper.load_model("base")
-            print("✅ Whisper loaded")
-        except Exception as e:
-            print(f"❌ Whisper failed: {e}")
+
+    def _get_whisper(self):
+        """Return the shared Whisper model, blocking until ready."""
+        return require_model(self.whisper_model)
     
     def _setup_session(self):
         ua = random.choice(self.user_agents)
@@ -213,16 +211,72 @@ class FacebookDirectAttack:
         
         return {'success': False}
     
+    @staticmethod
+    def _parse_vtt(raw):
+        """Convert VTT/SRT subtitle content to clean plain text."""
+        lines, seen = [], set()
+        for line in raw.splitlines():
+            line = line.strip()
+            if not line or line.startswith(('WEBVTT', 'Kind:', 'Language:', 'NOTE', 'STYLE')):
+                continue
+            if '-->' in line or line.isdigit():
+                continue
+            clean = re.sub(r'<[^>]+>', '', line).strip()
+            if clean and clean not in seen:
+                lines.append(clean)
+                seen.add(clean)
+            if len(seen) > 200:
+                seen.clear()
+        return '\n'.join(lines)
+
+    def _check_subtitles(self, url):
+        """Try fetching existing subtitles via yt-dlp before heavier methods."""
+        try:
+            cmd = [
+                'yt-dlp', '--js-runtimes', 'node',
+                '--remote-components', 'ejs:github',
+                '--write-subs', '--write-auto-subs',
+                '--sub-lang', 'vi,en', '--skip-download',
+                '--paths', self.temp_dir,
+                '-o', '%(id)s.%(ext)s',
+                url
+            ]
+            subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+            for f in os.listdir(self.temp_dir):
+                if f.endswith(('.vtt', '.srt', '.ass')):
+                    sub_path = os.path.join(self.temp_dir, f)
+                    with open(sub_path, 'r', encoding='utf-8') as fh:
+                        raw = fh.read()
+                    os.remove(sub_path)
+                    content = self._parse_vtt(raw)
+                    if len(content.strip()) > 20:
+                        return {
+                            'success': True,
+                            'title': 'Facebook Video',
+                            'transcript': content,
+                            'source': 'facebook_yt-dlp_subs',
+                            'language': 'auto'
+                        }
+        except Exception:
+            pass
+        return None
+
     def extract_facebook_direct(self, url):
         """Main extraction method"""
         print(f"🚀 Facebook Direct Attack: {url}")
-        
+
+        # --- Subtitle-first: fast path ---
+        sub_result = self._check_subtitles(url)
+        if sub_result:
+            print("✅ Subtitles found — skipping heavy extraction")
+            return sub_result
+
         video_id = self._extract_video_id(url)
         if not video_id:
             return {'success': False, 'error': 'Could not extract video ID'}
-        
+
         print(f"🎯 Video ID: {video_id}")
-        
+
         # Try all attack methods
         methods = [
             lambda: self.method_mobile_webapp_extraction(video_id),
@@ -378,12 +432,13 @@ class FacebookDirectAttack:
     
     def _transcribe_audio(self, audio_file):
         """Transcribe with Whisper"""
-        if not self.whisper:
+        whisper = self._get_whisper()
+        if not whisper:
             return None
-        
+
         try:
             print(f"🎤 Transcribing: {audio_file}")
-            result = self.whisper.transcribe(audio_file, language="vi")
+            result = whisper.transcribe(audio_file, language="vi")
             transcript = result["text"].strip()
             
             if os.path.exists(audio_file):
