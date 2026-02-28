@@ -138,7 +138,7 @@ def _do_transcribe(url: str, language: str | None = None) -> dict:
         elif platform == "tiktok":
             result = extractor_yt.extract_tiktok(url)
         elif platform == "facebook":
-            result = extractor_fb.extract_facebook_direct(url)
+            result = extractor_yt.extract_facebook(url)
         elif platform == "douyin":
             result = extractor_dy.extract_douyin_breakthrough(url)
         else:

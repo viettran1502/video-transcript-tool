@@ -64,7 +64,7 @@ class FacebookDirectAttack:
             r'/watch/?\?v=(\d+)',
             r'/reel/(\d+)'
         ]
-        
+
         for pattern in patterns:
             match = re.search(pattern, url)
             if match:
@@ -261,8 +261,23 @@ class FacebookDirectAttack:
             pass
         return None
 
+    def _resolve_share_url(self, url):
+        """Resolve /share/v/ short links to their canonical URL."""
+        if '/share/v/' in url:
+            try:
+                resp = requests.get(url, allow_redirects=True, timeout=10,
+                                    headers={'User-Agent': 'curl/8.0'})
+                resolved = resp.url.split('?')[0]
+                if resolved != url:
+                    print(f"📎 Resolved share URL → {resolved}")
+                    return resolved
+            except Exception:
+                pass
+        return url
+
     def extract_facebook_direct(self, url):
         """Main extraction method"""
+        url = self._resolve_share_url(url)
         print(f"🚀 Facebook Direct Attack: {url}")
 
         # --- Subtitle-first: fast path ---
@@ -302,6 +317,47 @@ class FacebookDirectAttack:
                 continue
         
         if not successful_method:
+            # Last resort: use yt-dlp to download audio + Whisper transcription
+            print("\n🔄 All direct attacks blocked — trying yt-dlp audio fallback...")
+            try:
+                audio_file = os.path.join(self.temp_dir, f"fb_audio_{int(time.time())}.wav")
+                cmd = [
+                    'yt-dlp', '--js-runtimes', 'node',
+                    '--remote-components', 'ejs:github',
+                    '--extract-audio', '--audio-format', 'wav',
+                    '--postprocessor-args', 'ffmpeg:-ar 16000 -ac 1',
+                    '--output', audio_file.replace('.wav', '.%(ext)s'),
+                    url
+                ]
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+                if result.returncode == 0:
+                    # Find the output file — check expected name, then scan dir
+                    found = None
+                    for ext in ['wav', 'mp3', 'm4a', 'webm']:
+                        candidate = audio_file.replace('.wav', f'.{ext}')
+                        if os.path.exists(candidate):
+                            found = candidate
+                            break
+                    if not found:
+                        for f in os.listdir(self.temp_dir):
+                            if f.endswith(('.wav', '.mp3', '.m4a', '.webm')):
+                                found = os.path.join(self.temp_dir, f)
+                                break
+                    audio_file = found
+                    if audio_file and os.path.exists(audio_file):
+                        transcript = self._transcribe_audio(audio_file)
+                        os.remove(audio_file)
+                        if transcript and len(transcript.strip()) > 20:
+                            print(f"🎉 yt-dlp fallback SUCCESS! {len(transcript)} chars")
+                            return {
+                                'success': True,
+                                'title': 'Facebook Video',
+                                'transcript': transcript,
+                                'source': 'facebook_ytdlp_whisper',
+                                'language': 'auto'
+                            }
+            except Exception as e:
+                print(f"❌ yt-dlp fallback failed: {e}")
             return {'success': False, 'error': 'ALL ATTACKS BLOCKED BY FACEBOOK'}
         
         # Process results

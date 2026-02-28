@@ -376,6 +376,52 @@ class WhisperTranscriptExtractor:
         except Exception as e:
             return {"error": f"TikTok processing failed: {str(e)}"}
     
+    def _resolve_facebook_url(self, url: str) -> str:
+        """Resolve Facebook /share/v/ short links to their canonical URL."""
+        if '/share/v/' in url:
+            try:
+                resp = requests.get(url, allow_redirects=True, timeout=10,
+                                    headers={'User-Agent': 'curl/8.0'})
+                resolved = resp.url.split('?')[0]
+                if resolved != url:
+                    self.logger.info(f"Resolved FB share URL → {resolved}")
+                    return resolved
+            except Exception:
+                pass
+        return url
+
+    def extract_facebook(self, url: str) -> Dict:
+        """Facebook extraction — subtitle-first via yt-dlp, then audio+Whisper."""
+        self._rate_limit('facebook')
+        url = self._resolve_facebook_url(url)
+
+        # Try subtitles first (same approach as YouTube)
+        video_id = re.search(r'/(?:videos|reel)/(\d+)', url)
+        if not video_id:
+            video_id = re.search(r'v=(\d+)', url)
+        vid = video_id.group(1) if video_id else 'facebook'
+
+        sub_result = self._check_subtitles(url, vid)
+        if sub_result is not None:
+            return sub_result
+
+        # Fallback: download audio and transcribe with Whisper
+        self.logger.info("No Facebook subtitles found, trying audio transcription...")
+        audio_file = self.extract_audio(url)
+        if audio_file:
+            transcript = self.transcribe_audio(audio_file)
+            os.remove(audio_file)
+            if transcript:
+                return {
+                    "success": True,
+                    "title": "Facebook Video (Audio Transcript)",
+                    "transcript": transcript,
+                    "source": "whisper_audio",
+                    "language": "auto"
+                }
+
+        return {"error": "Could not extract subtitles or transcribe Facebook audio"}
+
     def extract_transcript(self, url: str) -> Dict:
         """Main method to extract transcript from any platform"""
         # Expand shortened URLs first
