@@ -115,6 +115,9 @@ def _identify_platform(url: str) -> str:
 
 def _do_transcribe(url: str, language: str | None = None) -> dict:
     """Run transcription; returns a response dict.  Caller must hold no locks."""
+    # Expand shortened URLs (vt.tiktok.com, vm.tiktok.com, etc.)
+    url = extractor_yt.expand_shortened_url(url)
+
     # Check cache first
     cached = _cache_get(url)
     if cached is not None:
