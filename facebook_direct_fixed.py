@@ -261,22 +261,65 @@ class FacebookDirectAttack:
             pass
         return None
 
+    def _ytdlp_extract(self, url):
+        """Extract audio via yt-dlp and transcribe — most reliable for Facebook."""
+        try:
+            import time as _time
+            audio_file = os.path.join(self.temp_dir, f"fb_audio_{int(_time.time())}.wav")
+            cmd = [
+                'yt-dlp', '--extract-audio', '--audio-format', 'wav',
+                '--postprocessor-args', 'ffmpeg:-ar 16000 -ac 1',
+                '--output', audio_file.replace('.wav', '.%(ext)s'),
+                url
+            ]
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+            if r.returncode == 0:
+                # Find audio file
+                for ext in ['wav', 'mp3', 'm4a', 'webm']:
+                    f = audio_file.replace('.wav', f'.{ext}')
+                    if os.path.exists(f):
+                        print(f"✅ yt-dlp audio extracted: {f}")
+                        transcript = self._transcribe_audio(f)
+                        if transcript and len(transcript.strip()) > 20:
+                            # Get title
+                            title = 'Facebook Video'
+                            try:
+                                tr = subprocess.run(
+                                    ['yt-dlp', '--print', 'title', '--no-download', url],
+                                    capture_output=True, text=True, timeout=15)
+                                if tr.returncode == 0 and tr.stdout.strip():
+                                    title = tr.stdout.strip()
+                            except Exception:
+                                pass
+                            return {
+                                'success': True,
+                                'title': title,
+                                'transcript': transcript,
+                                'source': 'facebook_ytdlp_whisper',
+                                'language': 'auto'
+                            }
+        except Exception as e:
+            print(f"❌ yt-dlp extraction failed: {e}")
+        return None
+
     def _resolve_share_url(self, url):
-        """Resolve /share/v/ short links to their canonical URL."""
-        if '/share/v/' in url:
-            try:
-                resp = requests.get(url, allow_redirects=True, timeout=10,
-                                    headers={'User-Agent': 'curl/8.0'})
-                resolved = resp.url.split('?')[0]
-                if resolved != url:
-                    print(f"📎 Resolved share URL → {resolved}")
-                    return resolved
-            except Exception:
-                pass
+        """Resolve Facebook /share/v/ URLs to actual video URL via yt-dlp."""
+        if '/share/' not in url:
+            return url
+        try:
+            cmd = ['yt-dlp', '--print', 'webpage_url', '--no-download', url]
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=20)
+            if r.returncode == 0 and r.stdout.strip():
+                resolved = r.stdout.strip()
+                print(f"📎 Resolved share URL: {resolved}")
+                return resolved
+        except Exception:
+            pass
         return url
 
     def extract_facebook_direct(self, url):
         """Main extraction method"""
+        # Resolve /share/v/ URLs first
         url = self._resolve_share_url(url)
         print(f"🚀 Facebook Direct Attack: {url}")
 
@@ -285,6 +328,12 @@ class FacebookDirectAttack:
         if sub_result:
             print("✅ Subtitles found — skipping heavy extraction")
             return sub_result
+
+        # --- yt-dlp audio extraction (most reliable for Facebook) ---
+        print("🎵 Trying yt-dlp audio extraction...")
+        ytdlp_result = self._ytdlp_extract(url)
+        if ytdlp_result:
+            return ytdlp_result
 
         video_id = self._extract_video_id(url)
         if not video_id:
